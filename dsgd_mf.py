@@ -1,4 +1,4 @@
-import sys, os, re, math
+import sys, os, re, math, itertools, copy
 
 from os import listdir
 from os.path import isfile, join
@@ -72,7 +72,7 @@ def main():
     V_mat_index = V_row.join(V_col)
     V_mat_zip = V_mat_index.join(V_rating)
     V_mat = V_mat_zip.map(lambda ((r, c), ((row, col), data)):
-            ((r, c), sparse.csr_matrix((data, (row, col)),
+            ((r, c), sparse.coo_matrix((data, (row, col)),
                 shape=(((MAX_UID - r - 1) / blk_w_num) + 1,
                     ((MAX_MID - c - 1) / blk_h_num) + 1))))
 
@@ -89,29 +89,38 @@ def main():
 
 def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value,
         blk_w_size, blk_h_size, it_num):
-    V_local = [(((uid - 1) % blk_w_size, (mid - 1) % blk_h_size),
-        rating) for ((uid, mid), rating) in list(V)]
-
-    L = nzsl(V_local, W, H, lambda_value)
+    L = nzsl(V, W, H, lambda_value)
     L_prev = sys.float_info.max
 
     epsilon_n = math.pow(TAU + it_num, -beta_value)
 
-    while L < L_prev:
-        L_prev = L
+    while True:
+        # TODO: Introduce randomization here
+        for uid, mid, rating in itertools.izip(V.row, V.col, V.data):
+            W_old_row = copy.deepcopy(W[uid, :])
+            H_old_col = copy.deepcopy(H[:, mid])
 
-        for ((uid, mid), rating) in V_local:
-            #W_row_index = (uid - 1) / blk_w_size
-            #H_col_index = (mid - 1) / blk_h_size
+            W[uid, :] = W_old_row - epsilon_n *
+                (-2 * (rating - np.dot(W_old_row, H_old_col)[0]) * H_old_col +
+                  2 * (lambda_val / V[uid, :].nnz) * np.transpose(W_old_row))
+            H[:, mid] = H_old_col - epsilon_n *
+                (-2 * (rating - np.dot(W_old_row, H_old_col)[0]) * np.transpose(W_old_row) +
+                  2 * (lambda_val / V[:, mid].nnz) * H_old_col)
 
-            W_new_row = W[uid, :] - epsilon_n * (-2 * (rating - np.dot(W[uid, :], H[:, mid])[0]) * H[:, mid] + 2 * (lambda_val / N) * np.transpose(W[uid, :]))
+            L_prev = L
+            L = nzsl(V, W, H, lambda_value)
+
+            if L >= L_prev:
+                W[uid, :] = W_old_row
+                H[:, mid] = H_old_col
+                break
 
     return W, H
 
 def nzsl(V, W, H, lambda_value):
     res = 0.0
 
-    for ((uid, mid), rating) in V:
+    for uid, mid, rating in itertools.izip(V.row, V.col, V.data):
         res += math.pow(rating - np.dot(W[uid, :], H[:, mid])[0], 2)
 
     res += lambda_value * (sum(np.add.reduce(W * W)) + sum(np.add.reduce(H * H)))
