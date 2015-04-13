@@ -3,6 +3,7 @@ import sys, os, re, math, itertools, copy
 from os import listdir
 from os.path import isfile, join
 from operator import add
+from random import shuffle
 
 import numpy as np
 from scipy import sparse
@@ -134,7 +135,15 @@ def main():
             W_zip = sc.parallelize(W_newzip)
             H_zip = sc.parallelize(H_newzip)
 
-            print "iteration " + str(j) + " count: " + str(iter_count)
+            #print "iteration " + str(j) + " count: " + str(iter_count)
+
+    W_sorted = sorted(W_newzip, key=lambda x: x[0])
+    H_sorted = sorted(H_newzip, key=lambda x: x[0])
+
+    W_final = np.concatenate([x[1] for x in W_sorted], axis=0)
+    H_final = np.concatenate([x[1] for x in H_sorted], axis=1)
+
+    print np.dot(W_final, H_final)
 
 def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value,
         blk_w_size, blk_h_size, iter_count):
@@ -143,8 +152,10 @@ def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value,
     V_loc = V.tocoo()
     sgd_count = 0
 
-    # TODO: Introduce randomization here
-    for uid, mid, rating in itertools.izip(V_loc.row, V_loc.col, V_loc.data):
+    data_arr = [(x,y,z) for x,y,z in itertools.izip(V_loc.row, V_loc.col, V_loc.data)]
+    shuffle(data_arr)
+
+    for uid, mid, rating in data_arr:
         W_old_row = copy.deepcopy(W[uid, :])
         H_old_col = copy.deepcopy(H[:, mid])
 
@@ -152,10 +163,10 @@ def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value,
 
         W[uid, :] = W_old_row - epsilon_n * \
             (-2 * (rating - np.dot(W_old_row, H_old_col)) * H_old_col + \
-                2 * (lambda_value / V[uid, :].nnz) * np.transpose(W_old_row))
+              2 * (lambda_value / V[uid, :].nnz) * np.transpose(W_old_row))
         H[:, mid] = H_old_col - epsilon_n * \
             (-2 * (rating - np.dot(W_old_row, H_old_col)) * np.transpose(W_old_row) + \
-                2 * (lambda_value / V[:, mid].nnz) * H_old_col)
+              2 * (lambda_value / V[:, mid].nnz) * H_old_col)
 
         L_prev = L
         L = nzsl(V, W, H, lambda_value)
