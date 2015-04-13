@@ -1,4 +1,4 @@
-import sys, os, re, math, itertools, copy
+import sys, os, re, math, itertools, copy, csv
 
 from os import listdir
 from os.path import isfile, join
@@ -10,14 +10,9 @@ from scipy import sparse
 
 from pyspark import SparkContext, SparkConf
 
-#MAX_UID = 2649429
-#MAX_MID = 17770
 TAU = 100
-MAX_UID = 8
-MAX_MID = 10
-
-MIN_RATING = 1
-MAX_RATING = 5
+MIN_INIT = 0
+MAX_INIT = 1
 
 def main():
     if len(sys.argv) < 9:
@@ -52,10 +47,13 @@ def main():
     h_key = sc.parallelize(range(blk_h_num))
     tuple_key = w_key.flatMap(lambda x: [(x,y) for y in range(blk_h_num)])
 
-    W_val = sc.parallelize([np.random.uniform(MIN_RATING, MAX_RATING,
+    MAX_UID = V_list.map(lambda ((uid, mid), _): uid).max()
+    MAX_MID = V_list.map(lambda ((uid, mid), _): mid).max()
+
+    W_val = sc.parallelize([np.random.uniform(MIN_INIT, MAX_INIT,
         size=(((MAX_UID - x - 1) / blk_w_num) + 1, num_factors)) \
                 for x in xrange(blk_w_num)])
-    H_val = sc.parallelize([np.random.uniform(MIN_RATING, MAX_RATING,
+    H_val = sc.parallelize([np.random.uniform(MIN_INIT, MAX_INIT,
         size=(num_factors, ((MAX_MID - x - 1) / blk_h_num) + 1)) \
                 for x in xrange(blk_h_num)])
 
@@ -135,15 +133,25 @@ def main():
             W_zip = sc.parallelize(W_newzip)
             H_zip = sc.parallelize(H_newzip)
 
-            #print "iteration " + str(j) + " count: " + str(iter_count)
-
     W_sorted = sorted(W_newzip, key=lambda x: x[0])
     H_sorted = sorted(H_newzip, key=lambda x: x[0])
 
     W_final = np.concatenate([x[1] for x in W_sorted], axis=0)
     H_final = np.concatenate([x[1] for x in H_sorted], axis=1)
 
-    print np.dot(W_final, H_final)
+    W_csv = open(outputW_filepath, 'w')
+    H_csv = open(outputH_filepath, 'w')
+
+    W_write = csv.writer(W_csv, delimiter=',')
+    H_write = csv.writer(H_csv, delimiter=',')
+
+    W_write.writerows(W_final)
+    H_write.writerows(H_final)
+
+    W_csv.close()
+    H_csv.close()
+
+    return
 
 def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value,
         blk_w_size, blk_h_size, iter_count):
