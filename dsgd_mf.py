@@ -115,12 +115,6 @@ def main():
     for i in xrange(num_iterations):
         for j in xrange(num_workers):
             target_V = V_mat.filter(lambda ((x1, x2), _): x1 == ((x2 + j) % num_workers))
-
-            #if target_V.count() < num_workers:
-            #    non_target_V = V_mat.filter(lambda ((x1, x2), _): x1 != ((x2 + j) % num_workers))
-            #    non_target_V = non_target_V.map(lambda ((x1, x2), _): ((x1, x2), None))
-            #    target_V = target_V.union(non_target_V)
-
             target_W = W_zip.map(lambda (x, _): ((x, (x - j) % num_workers), _))
             target_H = H_zip.map(lambda (x, _): (((x + j) % num_workers, x), _))
             target_W_H = target_W.join(target_H)
@@ -128,14 +122,6 @@ def main():
             res = V_W_H.map(lambda ((w_index, h_index), (V, (W, H))): ((w_index, h_index),
                     dsgd(V, W, H, w_index, h_index, beta_value, lambda_value,
                         blk_w_size, blk_h_size, iter_count))).collect()
-
-            #print "target_V: " + str(target_V.count())
-            #print "target_W: " + str(target_W.count())
-            #print "target_H: " + str(target_H.count())
-            #print "V_W_H: " + str(V_W_H.count())
-            #print "res: " + str(res.count())
-
-            #print res
 
             W_newzip = []
             H_newzip = []
@@ -145,26 +131,13 @@ def main():
                 H_newzip.append((h_index, H_new))
                 iter_count += iter_count_new
 
-                print w_index, W_new
-
-            #W_zip = res.map(lambda ((w_index, h_index), (W_new, H_new, iter_count)): (w_index, W_new))
-            #H_zip = res.map(lambda ((w_index, h_index), (W_new, H_new, iter_count)): (h_index, H_new))
-            #iter_count += res.map(lambda (_, (W_new, H_new, iter_count)): iter_count).reduce(add)
-
             W_zip = sc.parallelize(W_newzip)
             H_zip = sc.parallelize(H_newzip)
 
             print "iteration " + str(j) + " count: " + str(iter_count)
 
-            #print W_zip.collect()
-            #print H_zip.collect()
-    print W_zip.collect()
-    print H_zip.collect()
-
 def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value,
         blk_w_size, blk_h_size, iter_count):
-    #if not V: return W, H, iter_count
-
     L = nzsl(V, W, H, lambda_value)
     L_prev = sys.float_info.max
     V_loc = V.tocoo()
@@ -187,7 +160,6 @@ def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value,
         L_prev = L
         L = nzsl(V, W, H, lambda_value)
 
-        #if w_index == 0 and h_index == 0: print W_old_row, W[uid, :], L_prev, L
         if L >= L_prev:
             W[uid, :] = W_old_row
             H[:, mid] = H_old_col
@@ -195,9 +167,6 @@ def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value,
 
         sgd_count += 1
 
-        #if w_index == 0 and h_index == 0: print W_old_row, W[uid, :]
-
-    #if w_index == 0 and h_index == 0: print "final W: ", W[uid, :]
     return W, H, sgd_count
 
 def nzsl(V, W, H, lambda_value):
