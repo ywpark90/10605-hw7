@@ -60,24 +60,24 @@ def main():
         return (uid - 1) % num_workers, (mid - 1) % num_workers
 
     V_zip = V_list.keyBy(lambda ((uid, mid), _): get_index(uid, mid)). \
-                map(lambda (x,y): (x,[y])).reduceByKey(add)
+                map(lambda (x,y): (x,[y])).reduceByKey(add). \
+                union(tuple_key.map(lambda x: (x, [])))
 
-    V_empty = tuple_key.map(lambda x: (x, []))
+    V_zip.cache()
 
     V_row = V_zip.map(lambda ((row, col), res): ((row, col),
         [(uid - 1) / num_workers for ((uid, mid), rating) in list(res)])). \
-        union(V_empty).reduceByKey(add)
+        reduceByKey(add)
     V_col = V_zip.map(lambda ((row, col), res): ((row, col),
         [(mid - 1) / num_workers for ((uid, mid), rating) in list(res)])). \
-        union(V_empty).reduceByKey(add)
+        reduceByKey(add)
     V_rating = V_zip.map(lambda (key, res): (key,
         [rating for ((uid, mid), rating) in list(res)])). \
-        union(V_empty).reduceByKey(add)
+        reduceByKey(add)
 
-    # TODO: join is expensive
-    V_mat = V_row.join(V_col).join(V_rating). \
-                map(lambda ((r, c), ((row, col), data)):
-                    ((r, c), sparse.csr_matrix((data, (row, col)),
+    V_mat = V_row.groupWith(V_col, V_rating). \
+                map(lambda ((r, c), (row, col, data)):
+                    ((r, c), sparse.csr_matrix((list(data)[0], (list(row)[0], list(col)[0])),
                         shape=(((MAX_UID - r - 1) / num_workers) + 1,
                             ((MAX_MID - c - 1) / num_workers) + 1))))
 
