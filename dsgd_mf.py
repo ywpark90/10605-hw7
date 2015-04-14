@@ -56,8 +56,31 @@ def main():
         size=(num_factors, ((MAX_MID - x - 1) / num_workers) + 1))) \
                 for x in xrange(num_workers)])
 
+    blk_w_size = int(math.ceil(float(MAX_UID) / num_workers))
+    blk_w_arr = [(MAX_UID - r - 1) / num_workers + 1 for r in xrange(num_workers)]
+    blk_w_arr = [sum(blk_w_arr[:i]) for i in xrange(num_workers)]
+    blk_w_rem = MAX_UID % num_workers
+    blk_w_cutoff = blk_w_size * blk_w_rem
+
+    blk_h_size = int(math.ceil(float(MAX_MID) / num_workers))
+    blk_h_arr = [(MAX_MID - r - 1) / num_workers + 1 for r in xrange(num_workers)]
+    blk_h_arr = [sum(blk_h_arr[:i]) for i in xrange(num_workers)]
+    blk_h_rem = MAX_MID % num_workers
+    blk_h_cutoff = blk_h_size * blk_h_rem
+
     def get_index(uid, mid):
-        return (uid - 1) % num_workers, (mid - 1) % num_workers
+        if blk_h_cutoff == 0 or mid <= blk_h_cutoff:
+            col = (mid - 1) / blk_h_size
+        else:
+            col = ((mid - blk_h_cutoff - 1) / (blk_h_size - 1)) + blk_h_rem
+
+        if blk_w_cutoff == 0 or uid <= blk_w_cutoff:
+            row = (uid - 1) / blk_w_size
+        else:
+            row = ((uid - blk_w_cutoff - 1) / (blk_w_size - 1)) + blk_w_rem
+
+        #return (uid - 1) % num_workers, col
+        return row, col
 
     V_zip = V_list.keyBy(lambda ((uid, mid), _): get_index(uid, mid)). \
                 map(lambda (x,y): (x,[y])).reduceByKey(add). \
@@ -66,10 +89,10 @@ def main():
     V_zip.cache()
 
     V_row = V_zip.map(lambda ((row, col), res): ((row, col),
-        [(uid - 1) / num_workers for ((uid, mid), rating) in list(res)])). \
+        [uid - blk_w_arr[row] - 1 for ((uid, mid), rating) in list(res)])). \
         reduceByKey(add)
     V_col = V_zip.map(lambda ((row, col), res): ((row, col),
-        [(mid - 1) / num_workers for ((uid, mid), rating) in list(res)])). \
+        [mid - blk_h_arr[col] - 1 for ((uid, mid), rating) in list(res)])). \
         reduceByKey(add)
     V_rating = V_zip.map(lambda (key, res): (key,
         [rating for ((uid, mid), rating) in list(res)])). \
@@ -82,6 +105,7 @@ def main():
                             ((MAX_MID - c - 1) / num_workers) + 1))))
 
     V_mat.cache()
+
     iter_count = 0
 
     for i in xrange(num_iterations):
@@ -107,16 +131,16 @@ def main():
     W_sorted = sorted(W_newzip, key=lambda x: x[0])
     H_sorted = sorted(H_newzip, key=lambda x: x[0])
 
-    W_final = np.zeros((MAX_UID, num_factors))
-    H_final = np.zeros((num_factors, MAX_MID))
+    #for (axis, H_loc) in H_sorted:
+    #    for i in xrange(H_loc.shape[1]):
+    #        H_final[:, num_workers * i + axis] = H_loc[:, i]
 
-    for (axis, W_loc) in W_sorted:
-        for i in xrange(W_loc.shape[0]):
-            W_final[num_workers * i + axis, :] = W_loc[i, :]
+    #for (axis, W_loc) in W_sorted:
+    #    for i in xrange(W_loc.shape[0]):
+    #        W_final[num_workers * i + axis, :] = W_loc[i, :]
 
-    for (axis, H_loc) in H_sorted:
-        for i in xrange(H_loc.shape[1]):
-            H_final[:, num_workers * i + axis] = H_loc[:, i]
+    W_final = np.concatenate([x[1] for x in W_sorted], axis=0)
+    H_final = np.concatenate([x[1] for x in H_sorted], axis=1)
 
     print np.dot(W_final, H_final)
 
