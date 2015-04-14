@@ -3,7 +3,7 @@ import sys, os, re, math, itertools, copy, csv
 from os import listdir
 from os.path import isfile, join
 from operator import add
-from random import shuffle
+from random import shuffle, randint
 
 import numpy as np
 from scipy import sparse
@@ -36,9 +36,12 @@ def main():
 
     if os.path.isdir(inputV_filepath):
         file_map = sc.wholeTextFiles(inputV_filepath)
-        V_list = file_map.flatMap(map_file)
+        V_list = file_map.flatMap(map_dir)
     else:
         file_map = sc.textFile(inputV_filepath)
+        V_list = file_map.map(map_file)
+
+    V_list.cache()
 
     blk_w_num = num_workers
     blk_h_num = num_workers
@@ -49,6 +52,9 @@ def main():
 
     MAX_UID = V_list.map(lambda ((uid, mid), _): uid).max()
     MAX_MID = V_list.map(lambda ((uid, mid), _): mid).max()
+
+    #MAX_UID = 10
+    #MAX_MID = 10
 
     W_val = sc.parallelize([np.random.uniform(MIN_INIT, MAX_INIT,
         size=(((MAX_UID - x - 1) / blk_w_num) + 1, num_factors)) \
@@ -88,36 +94,43 @@ def main():
 
         return row, col
 
-    V_zip = V_list.keyBy(lambda ((uid, mid), _): get_index(uid, mid)).groupByKey()
+    V_zip = V_list.keyBy(lambda ((uid, mid), _): get_index(uid, mid)). \
+                map(lambda (x,y): (x,[y])).reduceByKey(add)
     V_empty = tuple_key.map(lambda x: (x, []))
 
     V_row = V_zip.map(lambda ((row, col), res): ((row, col),
-        [uid - blk_w_arr[row] - 1 for ((uid, mid), rating) in list(res)]))
+        [uid - blk_w_arr[row] - 1 for ((uid, mid), rating) in list(res)])). \
+        union(V_empty).reduceByKey(add)
     V_col = V_zip.map(lambda ((row, col), res): ((row, col),
-        [mid - blk_h_arr[col] - 1 for ((uid, mid), rating) in list(res)]))
+        [mid - blk_h_arr[col] - 1 for ((uid, mid), rating) in list(res)])). \
+        union(V_empty).reduceByKey(add)
     V_rating = V_zip.map(lambda (key, res): (key,
-        [rating for ((uid, mid), rating) in list(res)]))
+        [rating for ((uid, mid), rating) in list(res)])). \
+        union(V_empty).reduceByKey(add)
+    #V_row = V_row.union(V_empty).reduceByKey(add)
+    #V_col = V_col.union(V_empty).reduceByKey(add)
+    #V_rating = V_rating.union(V_empty).reduceByKey(add)
 
-    V_row = V_row.union(V_empty).reduceByKey(add)
-    V_col = V_col.union(V_empty).reduceByKey(add)
-    V_rating = V_rating.union(V_empty).reduceByKey(add)
+    #V_mat_index = V_row.join(V_col)
+    #V_mat_zip = V_mat_index.join(V_rating)
+    V_mat = V_row.join(V_col).join(V_rating). \
+                map(lambda ((r, c), ((row, col), data)):
+                    ((r, c), sparse.csr_matrix((data, (row, col)),
+                        shape=(((MAX_UID - r - 1) / blk_w_num) + 1,
+                            ((MAX_MID - c - 1) / blk_h_num) + 1))))
 
-    V_mat_index = V_row.join(V_col)
-    V_mat_zip = V_mat_index.join(V_rating)
-    V_mat = V_mat_zip.map(lambda ((r, c), ((row, col), data)):
-            ((r, c), sparse.csr_matrix((data, (row, col)),
-                shape=(((MAX_UID - r - 1) / blk_w_num) + 1,
-                    ((MAX_MID - c - 1) / blk_h_num) + 1))))
-
+    V_mat.cache()
     iter_count = 0
 
     for i in xrange(num_iterations):
         for j in xrange(num_workers):
+            #j = randint(0, num_workers)
             target_V = V_mat.filter(lambda ((x1, x2), _): x1 == ((x2 + j) % num_workers))
             target_W = W_zip.map(lambda (x, _): ((x, (x - j) % num_workers), _))
             target_H = H_zip.map(lambda (x, _): (((x + j) % num_workers, x), _))
             target_W_H = target_W.join(target_H)
             V_W_H = target_V.join(target_W_H)
+
             res = V_W_H.map(lambda ((w_index, h_index), (V, (W, H))): ((w_index, h_index),
                     dsgd(V, W, H, w_index, h_index, beta_value, lambda_value,
                         blk_w_size, blk_h_size, iter_count))).collect()
@@ -133,11 +146,16 @@ def main():
             W_zip = sc.parallelize(W_newzip)
             H_zip = sc.parallelize(H_newzip)
 
+    #W_newzip = W_zip.collect()
+    #H_newzip = H_zip.collect()
+
     W_sorted = sorted(W_newzip, key=lambda x: x[0])
     H_sorted = sorted(H_newzip, key=lambda x: x[0])
 
     W_final = np.concatenate([x[1] for x in W_sorted], axis=0)
     H_final = np.concatenate([x[1] for x in H_sorted], axis=1)
+
+    print np.dot(W_final, H_final)
 
     W_csv = open(outputW_filepath, 'w')
     H_csv = open(outputH_filepath, 'w')
@@ -150,7 +168,6 @@ def main():
 
     W_csv.close()
     H_csv.close()
-
     return
 
 def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value,
@@ -199,11 +216,15 @@ def nzsl(V, W, H, lambda_value):
 
     return res
 
-def map_file(t):
+def map_dir(t):
     arr = t[1].split("\n", 1)
     mid = int(re.findall('\d+', arr[0])[0])
     tmp = [x.split(",") for x in arr[1].split("\n")]
     return [((int(elem[0]), mid), int(elem[1])) for elem in tmp if len(elem) == 3]
+
+def map_file(t):
+    arr = t.split(",")
+    return ((int(arr[0]), int(arr[1])), int(arr[2]))
 
 if __name__ == "__main__":
     main()
