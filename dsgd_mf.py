@@ -43,81 +43,43 @@ def main():
 
     V_list.cache()
 
-    blk_w_num = num_workers
-    blk_h_num = num_workers
-
-    w_key = sc.parallelize(range(blk_w_num))
-    h_key = sc.parallelize(range(blk_h_num))
-    tuple_key = w_key.flatMap(lambda x: [(x,y) for y in range(blk_h_num)])
+    w_h_key = sc.parallelize(range(num_workers))
+    tuple_key = w_h_key.flatMap(lambda x: [(x,y) for y in range(num_workers)])
 
     MAX_UID = V_list.map(lambda ((uid, mid), _): uid).max()
     MAX_MID = V_list.map(lambda ((uid, mid), _): mid).max()
 
-    #MAX_UID = 10
-    #MAX_MID = 10
-
-    W_val = sc.parallelize([np.random.uniform(MIN_INIT, MAX_INIT,
-        size=(((MAX_UID - x - 1) / blk_w_num) + 1, num_factors)) \
-                for x in xrange(blk_w_num)])
-    H_val = sc.parallelize([np.random.uniform(MIN_INIT, MAX_INIT,
-        size=(num_factors, ((MAX_MID - x - 1) / blk_h_num) + 1)) \
-                for x in xrange(blk_h_num)])
-
-    W_zip = w_key.zip(W_val)
-    H_zip = h_key.zip(H_val)
-
-    blk_w_size = int(math.ceil(float(MAX_UID) / blk_w_num))
-    blk_h_size = int(math.ceil(float(MAX_MID) / blk_h_num))
-
-    blk_w_arr = [(MAX_UID - r - 1) / blk_w_num + 1 for r in xrange(blk_w_num)]
-    blk_h_arr = [(MAX_MID - c - 1) / blk_h_num + 1 for c in xrange(blk_h_num)]
-
-    blk_w_arr = [sum(blk_w_arr[:i]) for i in xrange(blk_w_num)]
-    blk_h_arr = [sum(blk_h_arr[:i]) for i in xrange(blk_h_num)]
-
-    blk_w_rem = MAX_UID % blk_w_num
-    blk_h_rem = MAX_MID % blk_h_num
-
-    blk_w_cutoff = blk_w_size * blk_w_rem
-    blk_h_cutoff = blk_h_size * blk_h_rem
+    W_zip = sc.parallelize([(x, np.random.uniform(MIN_INIT, MAX_INIT,
+        size=(((MAX_UID - x - 1) / num_workers) + 1, num_factors))) \
+                for x in xrange(num_workers)])
+    H_zip = sc.parallelize([(x, np.random.uniform(MIN_INIT, MAX_INIT,
+        size=(num_factors, ((MAX_MID - x - 1) / num_workers) + 1))) \
+                for x in xrange(num_workers)])
 
     def get_index(uid, mid):
-        if blk_w_cutoff == 0 or uid <= blk_w_cutoff:
-            row = (uid - 1) / blk_w_size
-        else:
-            row = ((uid - blk_w_cutoff - 1) / (blk_w_size - 1)) + blk_w_rem
-
-        if blk_h_cutoff == 0 or mid <= blk_h_cutoff:
-            col = (mid - 1) / blk_h_size
-        else:
-            col = ((mid - blk_h_cutoff - 1) / (blk_h_size - 1)) + blk_h_rem
-
-        return row, col
+        return (uid - 1) % num_workers, (mid - 1) % num_workers
 
     V_zip = V_list.keyBy(lambda ((uid, mid), _): get_index(uid, mid)). \
                 map(lambda (x,y): (x,[y])).reduceByKey(add)
+
     V_empty = tuple_key.map(lambda x: (x, []))
 
     V_row = V_zip.map(lambda ((row, col), res): ((row, col),
-        [uid - blk_w_arr[row] - 1 for ((uid, mid), rating) in list(res)])). \
+        [(uid - 1) / num_workers for ((uid, mid), rating) in list(res)])). \
         union(V_empty).reduceByKey(add)
     V_col = V_zip.map(lambda ((row, col), res): ((row, col),
-        [mid - blk_h_arr[col] - 1 for ((uid, mid), rating) in list(res)])). \
+        [(mid - 1) / num_workers for ((uid, mid), rating) in list(res)])). \
         union(V_empty).reduceByKey(add)
     V_rating = V_zip.map(lambda (key, res): (key,
         [rating for ((uid, mid), rating) in list(res)])). \
         union(V_empty).reduceByKey(add)
-    #V_row = V_row.union(V_empty).reduceByKey(add)
-    #V_col = V_col.union(V_empty).reduceByKey(add)
-    #V_rating = V_rating.union(V_empty).reduceByKey(add)
 
-    #V_mat_index = V_row.join(V_col)
-    #V_mat_zip = V_mat_index.join(V_rating)
+    # TODO: join is expensive
     V_mat = V_row.join(V_col).join(V_rating). \
                 map(lambda ((r, c), ((row, col), data)):
                     ((r, c), sparse.csr_matrix((data, (row, col)),
-                        shape=(((MAX_UID - r - 1) / blk_w_num) + 1,
-                            ((MAX_MID - c - 1) / blk_h_num) + 1))))
+                        shape=(((MAX_UID - r - 1) / num_workers) + 1,
+                            ((MAX_MID - c - 1) / num_workers) + 1))))
 
     V_mat.cache()
     iter_count = 0
@@ -132,8 +94,7 @@ def main():
             V_W_H = target_V.join(target_W_H)
 
             res = V_W_H.map(lambda ((w_index, h_index), (V, (W, H))): ((w_index, h_index),
-                    dsgd(V, W, H, w_index, h_index, beta_value, lambda_value,
-                        blk_w_size, blk_h_size, iter_count))).collect()
+                    dsgd(V, W, H, w_index, h_index, beta_value, lambda_value, iter_count))).collect()
 
             W_newzip = []
             H_newzip = []
@@ -152,8 +113,19 @@ def main():
     W_sorted = sorted(W_newzip, key=lambda x: x[0])
     H_sorted = sorted(H_newzip, key=lambda x: x[0])
 
-    W_final = np.concatenate([x[1] for x in W_sorted], axis=0)
-    H_final = np.concatenate([x[1] for x in H_sorted], axis=1)
+    W_final = np.zeros((MAX_UID, num_factors))
+    H_final = np.zeros((num_factors, MAX_MID))
+
+    for (axis, W_loc) in W_sorted:
+        for i in xrange(W_loc.shape[0]):
+            W_final[num_workers * i + axis, :] = W_loc[i, :]
+
+    for (axis, H_loc) in H_sorted:
+        for i in xrange(H_loc.shape[1]):
+            H_final[:, num_workers * i + axis] = H_loc[:, i]
+
+    #W_final = np.concatenate([x[1] for x in W_sorted], axis=0)
+    #H_final = np.concatenate([x[1] for x in H_sorted], axis=1)
 
     print np.dot(W_final, H_final)
 
@@ -170,8 +142,7 @@ def main():
     H_csv.close()
     return
 
-def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value,
-        blk_w_size, blk_h_size, iter_count):
+def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value, iter_count):
     L = nzsl(V, W, H, lambda_value)
     L_prev = sys.float_info.max
     V_loc = V.tocoo()
