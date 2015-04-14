@@ -85,30 +85,24 @@ def main():
     iter_count = 0
 
     for i in xrange(num_iterations):
-        for j in xrange(num_workers):
-            #j = randint(0, num_workers)
+        j_arr = range(num_workers)
+        shuffle(j_arr)
+
+        for j in j_arr:
             target_V = V_mat.filter(lambda ((x1, x2), _): x1 == ((x2 + j) % num_workers))
             target_W = W_zip.map(lambda (x, _): ((x, (x - j) % num_workers), _))
             target_H = H_zip.map(lambda (x, _): (((x + j) % num_workers, x), _))
-            target_W_H = target_W.join(target_H)
-            V_W_H = target_V.join(target_W_H)
 
-            res = V_W_H.map(lambda ((w_index, h_index), (V, (W, H))): ((w_index, h_index),
-                    dsgd(V, W, H, w_index, h_index, beta_value, lambda_value, iter_count))).collect()
+            res = target_V.groupWith(target_W, target_H).map(lambda ((w_index, h_index), (V, W, H)): \
+                    ((w_index, h_index), dsgd(list(V)[0], list(W)[0], list(H)[0], w_index, h_index, \
+                        beta_value, lambda_value, iter_count))).collect()
 
-            W_newzip = []
-            H_newzip = []
+            W_zip = sc.parallelize([(w_index, W_new) for ((w_index, h_index), (W_new, H_new, iter_count_new)) in res])
+            H_zip = sc.parallelize([(h_index, H_new) for ((w_index, h_index), (W_new, H_new, iter_count_new)) in res])
+            iter_count = sum([val for (_, (_, _, val)) in res])
 
-            for ((w_index, h_index), (W_new, H_new, iter_count_new)) in res:
-                W_newzip.append((w_index, W_new))
-                H_newzip.append((h_index, H_new))
-                iter_count += iter_count_new
-
-            W_zip = sc.parallelize(W_newzip)
-            H_zip = sc.parallelize(H_newzip)
-
-    #W_newzip = W_zip.collect()
-    #H_newzip = H_zip.collect()
+    W_newzip = W_zip.collect()
+    H_newzip = H_zip.collect()
 
     W_sorted = sorted(W_newzip, key=lambda x: x[0])
     H_sorted = sorted(H_newzip, key=lambda x: x[0])
@@ -124,9 +118,6 @@ def main():
         for i in xrange(H_loc.shape[1]):
             H_final[:, num_workers * i + axis] = H_loc[:, i]
 
-    #W_final = np.concatenate([x[1] for x in W_sorted], axis=0)
-    #H_final = np.concatenate([x[1] for x in H_sorted], axis=1)
-
     print np.dot(W_final, H_final)
 
     W_csv = open(outputW_filepath, 'w')
@@ -140,6 +131,7 @@ def main():
 
     W_csv.close()
     H_csv.close()
+
     return
 
 def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value, iter_count):
@@ -159,10 +151,10 @@ def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value, iter_count):
 
         W[uid, :] = W_old_row - epsilon_n * \
             (-2 * (rating - np.dot(W_old_row, H_old_col)) * H_old_col + \
-              2 * (lambda_value / V[uid, :].nnz) * np.transpose(W_old_row))
+            2 * (lambda_value / V[uid, :].nnz) * np.transpose(W_old_row))
         H[:, mid] = H_old_col - epsilon_n * \
             (-2 * (rating - np.dot(W_old_row, H_old_col)) * np.transpose(W_old_row) + \
-              2 * (lambda_value / V[:, mid].nnz) * H_old_col)
+            2 * (lambda_value / V[:, mid].nnz) * H_old_col)
 
         L_prev = L
         L = nzsl(V, W, H, lambda_value)
