@@ -118,7 +118,7 @@ def main():
         for i in xrange(H_loc.shape[1]):
             H_final[:, num_workers * i + axis] = H_loc[:, i]
 
-    print np.dot(W_final, H_final)
+    #print np.dot(W_final, H_final)
 
     W_csv = open(outputW_filepath, 'w')
     H_csv = open(outputH_filepath, 'w')
