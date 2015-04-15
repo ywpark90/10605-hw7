@@ -30,8 +30,8 @@ def main():
     outputW_filepath = sys.argv[7]
     outputH_filepath = sys.argv[8]
 
-    master = "local[" + sys.argv[2] + "]"
-    conf = SparkConf().setAppName("10605 HW7 youngwop").setMaster(master)
+    #master = "local[" + sys.argv[2] + "]"
+    conf = SparkConf().setAppName("10605hw7")
     sc = SparkContext(conf=conf)
 
     if os.path.isdir(inputV_filepath):
@@ -142,7 +142,7 @@ def main():
     W_final = np.concatenate([x[1] for x in W_sorted], axis=0)
     H_final = np.concatenate([x[1] for x in H_sorted], axis=1)
 
-    print np.dot(W_final, H_final)
+    #print np.dot(W_final, H_final)
 
     W_csv = open(outputW_filepath, 'w')
     H_csv = open(outputH_filepath, 'w')
