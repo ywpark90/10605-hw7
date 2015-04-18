@@ -11,6 +11,8 @@ from scipy import sparse
 from pyspark import SparkContext, SparkConf
 
 TAU = 100
+
+# Range for initializing W and H
 MIN_INIT = 0
 MAX_INIT = 1
 
@@ -19,6 +21,7 @@ def main():
         print "Not enough arguments."
         sys.exit(0)
 
+    # Parse input parameters
     num_factors = int(sys.argv[1])
     num_workers = int(sys.argv[2])
     num_iterations = int(sys.argv[3])
@@ -30,15 +33,17 @@ def main():
     outputW_filepath = sys.argv[7]
     outputH_filepath = sys.argv[8]
 
-    #master = "local[" + sys.argv[2] + "]"
-    conf = SparkConf().setAppName("10605hw7")
+    conf = SparkConf().setAppName("10605hw7").setMaster("local")
     sc = SparkContext(conf=conf)
 
+    # Behaive differently if input is directory or file
     if os.path.isdir(inputV_filepath):
         file_map = sc.wholeTextFiles(inputV_filepath)
         V_list = file_map.flatMap(map_dir)
     else:
-        file_map = sc.textFile(inputV_filepath)
+        with open(inputV_filepath) as ff:
+            content = ff.readlines()
+        file_map = sc.parallelize(content).map(lambda x: x.rstrip('\n'))
         V_list = file_map.map(map_file)
 
     V_list.cache()
@@ -46,9 +51,11 @@ def main():
     w_h_key = sc.parallelize(range(num_workers))
     tuple_key = w_h_key.flatMap(lambda x: [(x,y) for y in range(num_workers)])
 
+    # Find maximum user id and movie id
     MAX_UID = V_list.map(lambda ((uid, mid), _): uid).max()
     MAX_MID = V_list.map(lambda ((uid, mid), _): mid).max()
 
+    # Initialize W and H for each partitions
     W_zip = sc.parallelize([(x, np.random.uniform(MIN_INIT, MAX_INIT,
         size=(((MAX_UID - x - 1) / num_workers) + 1, num_factors))) \
                 for x in xrange(num_workers)])
@@ -68,6 +75,7 @@ def main():
     blk_h_rem = MAX_MID % num_workers
     blk_h_cutoff = blk_h_size * blk_h_rem
 
+    # Return partition location for rating data
     def get_index(uid, mid):
         if blk_h_cutoff == 0 or mid <= blk_h_cutoff:
             col = (mid - 1) / blk_h_size
@@ -79,9 +87,9 @@ def main():
         else:
             row = ((uid - blk_w_cutoff - 1) / (blk_w_size - 1)) + blk_w_rem
 
-        #return (uid - 1) % num_workers, col
         return row, col
 
+    # Group rating by partition
     V_zip = V_list.keyBy(lambda ((uid, mid), _): get_index(uid, mid)). \
                 map(lambda (x,y): (x,[y])).reduceByKey(add). \
                 union(tuple_key.map(lambda x: (x, [])))
@@ -98,6 +106,7 @@ def main():
         [rating for ((uid, mid), rating) in list(res)])). \
         reduceByKey(add)
 
+    # Generate sparse matrix of rating for lookup
     V_mat = V_row.groupWith(V_col, V_rating). \
                 map(lambda ((r, c), (row, col, data)):
                     ((r, c), sparse.csr_matrix((list(data)[0], (list(row)[0], list(col)[0])),
@@ -107,9 +116,10 @@ def main():
     V_mat.cache()
 
     iter_count = 0
+    j_arr = range(num_workers)
 
     for i in xrange(num_iterations):
-        j_arr = range(num_workers)
+        # For each iteration, shuffle order of strata
         shuffle(j_arr)
 
         for j in j_arr:
@@ -117,13 +127,15 @@ def main():
             target_W = W_zip.map(lambda (x, _): ((x, (x - j) % num_workers), _))
             target_H = H_zip.map(lambda (x, _): (((x + j) % num_workers, x), _))
 
+            # Perform SGD for each partition
             res = target_V.groupWith(target_W, target_H).map(lambda ((w_index, h_index), (V, W, H)): \
                     ((w_index, h_index), dsgd(list(V)[0], list(W)[0], list(H)[0], w_index, h_index, \
                         beta_value, lambda_value, iter_count))).collect()
 
-            W_zip = sc.parallelize([(w_index, W_new) for ((w_index, h_index), (W_new, H_new, iter_count_new)) in res])
-            H_zip = sc.parallelize([(h_index, H_new) for ((w_index, h_index), (W_new, H_new, iter_count_new)) in res])
-            iter_count = sum([val for (_, (_, _, val)) in res])
+            # Update W, H, and iteration count
+            W_zip = sc.parallelize([(w_index, W_new) for ((w_index, h_index), (W_new, H_new, iter_count_new, L_loc)) in res])
+            H_zip = sc.parallelize([(h_index, H_new) for ((w_index, h_index), (W_new, H_new, iter_count_new, L_loc)) in res])
+            iter_count += sum([val for (_, (_, _, val, _)) in res])
 
     W_newzip = W_zip.collect()
     H_newzip = H_zip.collect()
@@ -131,18 +143,9 @@ def main():
     W_sorted = sorted(W_newzip, key=lambda x: x[0])
     H_sorted = sorted(H_newzip, key=lambda x: x[0])
 
-    #for (axis, H_loc) in H_sorted:
-    #    for i in xrange(H_loc.shape[1]):
-    #        H_final[:, num_workers * i + axis] = H_loc[:, i]
-
-    #for (axis, W_loc) in W_sorted:
-    #    for i in xrange(W_loc.shape[0]):
-    #        W_final[num_workers * i + axis, :] = W_loc[i, :]
-
+    # Concatenate W and H to generate final W and H
     W_final = np.concatenate([x[1] for x in W_sorted], axis=0)
     H_final = np.concatenate([x[1] for x in H_sorted], axis=1)
-
-    #print np.dot(W_final, H_final)
 
     W_csv = open(outputW_filepath, 'w')
     H_csv = open(outputH_filepath, 'w')
@@ -158,12 +161,14 @@ def main():
 
     return
 
+# Function that performs SGD
 def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value, iter_count):
     L = nzsl(V, W, H, lambda_value)
     L_prev = sys.float_info.max
     V_loc = V.tocoo()
     sgd_count = 0
 
+    # Shuffle data
     data_arr = [(x,y,z) for x,y,z in itertools.izip(V_loc.row, V_loc.col, V_loc.data)]
     shuffle(data_arr)
 
@@ -183,22 +188,27 @@ def dsgd(V, W, H, w_index, h_index, beta_value, lambda_value, iter_count):
         L_prev = L
         L = nzsl(V, W, H, lambda_value)
 
+        # If loss value become larger, undo last action and return
         if L >= L_prev:
             W[uid, :] = W_old_row
             H[:, mid] = H_old_col
-            return W, H, sgd_count
+            return W, H, sgd_count, L_prev
 
         sgd_count += 1
 
-    return W, H, sgd_count
+    # Return final output
+    return W, H, sgd_count, L
 
+# Function for computing loss value
 def nzsl(V, W, H, lambda_value):
     res = 0.0
     V_loc = V.tocoo()
 
+    # Compute L_NZSL
     for uid, mid, rating in itertools.izip(V_loc.row, V_loc.col, V_loc.data):
         res += math.pow(rating - np.dot(W[uid, :], H[:, mid]), 2)
 
+    # Add L_2
     res += lambda_value * (sum(np.add.reduce(W * W)) + sum(np.add.reduce(H * H)))
 
     return res
