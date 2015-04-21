@@ -33,7 +33,8 @@ def main():
     outputW_filepath = sys.argv[7]
     outputH_filepath = sys.argv[8]
 
-    conf = SparkConf().setAppName("10605hw7").setMaster("local")
+    conf = SparkConf().setAppName("10605hw7").setMaster("local[%d]" % num_workers)
+    #conf = SparkConf().setAppName("10605hw7").setMaster("local")
     sc = SparkContext(conf=conf)
 
     # Behaive differently if input is directory or file
@@ -118,6 +119,17 @@ def main():
     iter_count = 0
     j_arr = range(num_workers)
 
+    def mapStratum(it):
+        for x in it:
+            w_index = x[0][0]
+            h_index = x[0][1]
+            V = list(x[1][0])[0]
+            W = list(x[1][1])[0]
+            H = list(x[1][2])[0]
+
+            yield ((w_index, h_index), dsgd(V, W, H, w_index, h_index, \
+                    beta_value, lambda_value, iter_count))
+
     for i in xrange(num_iterations):
         # For each iteration, shuffle order of strata
         shuffle(j_arr)
@@ -128,9 +140,12 @@ def main():
             target_H = H_zip.map(lambda (x, _): (((x + j) % num_workers, x), _))
 
             # Perform SGD for each partition
-            res = target_V.groupWith(target_W, target_H).map(lambda ((w_index, h_index), (V, W, H)): \
-                    ((w_index, h_index), dsgd(list(V)[0], list(W)[0], list(H)[0], w_index, h_index, \
-                        beta_value, lambda_value, iter_count))).collect()
+            #res = target_V.groupWith(target_W, target_H).partitionBy(num_workers). \
+            #        mapPartitions(lambda ((w_index, h_index), (V, W, H)): \
+            #            ((w_index, h_index), dsgd(list(V)[0], list(W)[0], list(H)[0], w_index, h_index, \
+            #                beta_value, lambda_value, iter_count))).collect()
+            res = target_V.groupWith(target_W, target_H).partitionBy(num_workers). \
+                    mapPartitions(mapStratum).collect()
 
             # Update W, H, and iteration count
             W_zip = sc.parallelize([(w_index, W_new) for ((w_index, h_index), (W_new, H_new, iter_count_new, L_loc)) in res])
